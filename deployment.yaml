@@ -1,0 +1,99 @@
+# imajev-9b on one MIG slice (nvidia.com/mig-2g.35gb).
+# kubectl apply -f deployment.yaml
+# Replace REGISTRY/imajev:1.0 with your image (built from the earlier Dockerfile; no change needed there).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: imajev-models
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 40Gi          # 9B base ~19.3 GB + adapter + headroom
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: imajev
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: imajev }
+  template:
+    metadata:
+      labels: { app: imajev }
+    spec:
+      imagePullSecrets:
+        - name: <pullsecret> 
+      initContainers:
+        - name: copy-weights
+          image: imajev-weight:1.0.0
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -f /models/.complete-9b ]; then
+                echo "weights already present"; exit 0
+              fi
+              echo "copying weights to the PVC..."
+              mkdir -p /models/cache /models/adapters
+              cp -a /weights/cache/. /models/cache/
+              cp -a /weights/adapters/. /models/adapters/
+              touch /models/.complete-9b
+              du -sh /models/cache /models/adapters
+              echo "done"
+          volumeMounts:
+            - { name: models, mountPath: /models }   # PVC root; cache/ and adapters/ are the app's subPaths
+      containers:
+        - name: imajev
+          image: imajev:1.0.0
+          # Overrides the Dockerfile CMD (which serves the 4B) with the 9B.
+          command: ["python", "scripts/playground/server.py"]
+          args:
+            - --backend=torch
+            - --model-bundle=artifacts/model-qwen9b.json
+            - --adapter=adapters/imajev-9b
+            - --calibration=adapters/imajev-9b/calibration.json
+            - --rotations=4
+            - --model-name=imajev-9b
+            - --host=0.0.0.0
+            - --port=8765
+          ports:
+            - containerPort: 8765
+          resources:
+            limits:
+              nvidia.com/mig-2g.35gb: 1
+              memory: 40Gi       # weights are loaded into RAM first, then moved to the GPU
+            requests:
+              cpu: "2"
+              memory: 24Gi
+          volumeMounts:
+            - { name: models, mountPath: /app/.cache,   subPath: cache }
+            - { name: models, mountPath: /app/adapters, subPath: adapters }
+          startupProbe:
+            httpGet: { path: /v1/models, port: 8765 }
+            periodSeconds: 10
+            failureThreshold: 90   # up to 15 min for the first load
+          readinessProbe:
+            httpGet: { path: /v1/models, port: 8765 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /v1/models, port: 8765 }
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: imajev-models
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: imajev
+spec:
+  selector: { app: imajev }
+  ports:
+    - port: 80
+      targetPort: 8765
