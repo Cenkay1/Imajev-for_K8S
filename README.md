@@ -37,8 +37,6 @@ Replace the example registry and image tags with values for your environment. Th
 
 ## Deploy
 
-Before applying the manifest, edit the two image references in `deployment.yaml` to match the images you built and pushed. The manifest currently names `registry.enerjisa.com.tr/base/imajev:1.0.0` and `registry.enerjisa.com.tr/base/imajev-weight:1.0.0`; the second reference must match the weights image tag (the example above uses `imajev-weights:9b-v1`). Configure the `nexus-secret` image pull secret for your registry, or remove `imagePullSecrets` if the registry does not require authentication.
-
 The cluster must have the NVIDIA device plugin configured to advertise `nvidia.com/mig-2g.35gb`, a suitable default StorageClass (or an explicit one added to the PVC), and enough memory for the model load. The PVC requests 40 Gi; the pod requests 24 Gi and has a 40 Gi memory limit.
 
 ```sh
